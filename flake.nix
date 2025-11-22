@@ -118,106 +118,141 @@
           sudo ${goss}/bin/goss --gossfile "$SPEC_FILE" validate --format "$OUTPUT_FORMAT"
         '';
 
-        # Script to generate CIS spec from existing machine
+        # Script to generate CIS spec from current machine
         cisGenerateSpec = pkgs.writeScriptBin "cis-generate-spec" ''
           #!${pkgs.bash}/bin/bash
           set -euo pipefail
 
-          HOST=''${1:-}
-          USER=''${2:-}
-          KEY=''${3:-}
-          OUTPUT=''${4:-cis-spec.yaml}
+          OUTPUT=''${1:-cis-spec.yaml}
 
           usage() {
             cat << EOF
           CIS Spec Generator
 
-          Generates a CIS specification from an existing machine's configuration
+          Generates a CIS specification from the current machine's configuration.
+          Run this ON the machine you want to capture as a baseline.
 
-          Usage: cis-generate-spec <host> <user> <ssh-key> [output-file]
+          Usage: cis-generate-spec [output-file]
 
           Arguments:
-            host        - Target host to inspect
-            user        - SSH user
-            ssh-key     - Path to SSH private key
             output-file - Output YAML file (default: cis-spec.yaml)
 
           Example:
-            cis-generate-spec 192.168.1.100 admin ~/.ssh/id_rsa baseline.yaml
+            # SSH into your baseline machine first
+            ssh admin@baseline-server
+
+            # Then generate the spec
+            cis-generate-spec baseline.yaml
           EOF
           }
 
-          if [ -z "$HOST" ] || [ -z "$USER" ] || [ -z "$KEY" ]; then
+          if [ "$OUTPUT" = "--help" ] || [ "$OUTPUT" = "-h" ]; then
             usage
-            exit 1
+            exit 0
           fi
 
-          echo "Generating CIS specification from $HOST..."
+          echo "Generating CIS specification from current machine: $(hostname)"
           echo "Output file: $OUTPUT"
           echo ""
 
-          ${pkgs.openssh}/bin/ssh -i "$KEY" "$USER@$HOST" 'bash -s' << 'ENDSSH' > "$OUTPUT"
-          #!/bin/bash
+          # Get current system information
+          HOSTNAME=$(hostname)
+          DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          OS_INFO=$(lsb_release -d 2>/dev/null | cut -f2 || echo "Unknown")
 
-          cat << 'YAML_START'
+          # Get file permissions
+          SSHD_MODE=$(stat -c %a /etc/ssh/sshd_config 2>/dev/null || echo "unknown")
+          SSHD_OWNER=$(stat -c %U /etc/ssh/sshd_config 2>/dev/null || echo "unknown")
+          SSHD_GROUP=$(stat -c %G /etc/ssh/sshd_config 2>/dev/null || echo "unknown")
+
+          PASSWD_MODE=$(stat -c %a /etc/passwd 2>/dev/null || echo "unknown")
+          PASSWD_OWNER=$(stat -c %U /etc/passwd 2>/dev/null || echo "unknown")
+          PASSWD_GROUP=$(stat -c %G /etc/passwd 2>/dev/null || echo "unknown")
+
+          SHADOW_MODE=$(stat -c %a /etc/shadow 2>/dev/null || echo "unknown")
+          SHADOW_OWNER=$(stat -c %U /etc/shadow 2>/dev/null || echo "unknown")
+          SHADOW_GROUP=$(stat -c %G /etc/shadow 2>/dev/null || echo "unknown")
+
+          # Check packages
+          AIDE_INSTALLED=$(dpkg -l aide 2>/dev/null | grep -q ^ii && echo "true" || echo "false")
+          XINETD_INSTALLED=$(dpkg -l xinetd 2>/dev/null | grep -q ^ii && echo "true" || echo "false")
+          AUDITD_INSTALLED=$(dpkg -l auditd 2>/dev/null | grep -q ^ii && echo "true" || echo "false")
+
+          # Check services
+          UFW_STATUS=$(ufw status 2>/dev/null | grep -q "Status: active" && echo "active" || echo "inactive")
+
+          # Check kernel parameters
+          IPV4_FORWARD=$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo "unknown")
+          IPV6_FORWARD=$(sysctl -n net.ipv6.conf.all.forwarding 2>/dev/null || echo "unknown")
+          IPV4_SOURCE_ROUTE=$(sysctl -n net.ipv4.conf.all.accept_source_route 2>/dev/null || echo "unknown")
+          IPV4_DEFAULT_SOURCE_ROUTE=$(sysctl -n net.ipv4.conf.default.accept_source_route 2>/dev/null || echo "unknown")
+
+          # Generate GOSS YAML
+          cat > "$OUTPUT" << EOF
           # CIS Benchmark Specification (GOSS Format)
-          # Generated from: $(hostname)
-          # Date: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          # OS: $(lsb_release -d 2>/dev/null | cut -f2 || echo "Unknown")
+          # Generated from: $HOSTNAME
+          # Date: $DATE
+          # OS: $OS_INFO
 
           file:
             /etc/ssh/sshd_config:
               exists: true
-              mode: "0600"
-              owner: root
-              group: root
+              mode: "$SSHD_MODE"
+              owner: $SSHD_OWNER
+              group: $SSHD_GROUP
               contains:
-                - "PermitRootLogin no"
+          $(grep -E "^PermitRootLogin" /etc/ssh/sshd_config 2>/dev/null | sed 's/^/      - "/' | sed 's/$/"/' || echo '      - "PermitRootLogin no"')
+          $(grep -E "^Protocol" /etc/ssh/sshd_config 2>/dev/null | sed 's/^/      - "/' | sed 's/$/"/' || echo '      - "Protocol 2"')
 
             /etc/passwd:
               exists: true
-              mode: "0644"
-              owner: root
-              group: root
+              mode: "$PASSWD_MODE"
+              owner: $PASSWD_OWNER
+              group: $PASSWD_GROUP
 
             /etc/shadow:
               exists: true
-              mode: "0640"
-              owner: root
+              mode: "$SHADOW_MODE"
+              owner: $SHADOW_OWNER
+              group: $SHADOW_GROUP
 
             /etc/login.defs:
               exists: true
               contains:
-                - "/PASS_MIN_LEN\\s+14/"
+          $(grep -E "^PASS_MIN_LEN" /etc/login.defs 2>/dev/null | sed 's/^/      - "\//' | sed 's/$/\\\s+[0-9]+\/"/' || echo '      - "/PASS_MIN_LEN\\s+14/"')
+          $(grep -E "^PASS_MAX_DAYS" /etc/login.defs 2>/dev/null | sed 's/^/      - "\//' | sed 's/$/\\\s+[0-9]+\/"/' || echo '      - "/PASS_MAX_DAYS\\s+90/"')
 
           package:
             aide:
-              installed: true
+              installed: $AIDE_INSTALLED
 
             xinetd:
-              installed: false
+              installed: $XINETD_INSTALLED
+
+            auditd:
+              installed: $AUDITD_INSTALLED
 
           service:
             ufw:
-              enabled: true
-              running: true
+              enabled: $([ "$UFW_STATUS" = "active" ] && echo "true" || echo "false")
+              running: $([ "$UFW_STATUS" = "active" ] && echo "true" || echo "false")
 
           kernel-param:
             net.ipv4.ip_forward:
-              value: 0
+              value: $IPV4_FORWARD
 
             net.ipv6.conf.all.forwarding:
-              value: 0
+              value: $IPV6_FORWARD
 
             net.ipv4.conf.all.accept_source_route:
-              value: 0
+              value: $IPV4_SOURCE_ROUTE
 
             net.ipv4.conf.default.accept_source_route:
-              value: 0
+              value: $IPV4_DEFAULT_SOURCE_ROUTE
 
           command:
             check-password-fields:
-              exec: "awk -F: '(\$2 == \"\") {print}' /etc/shadow | wc -l"
+              exec: "awk -F: '(\\\$2 == \"\") {print}' /etc/shadow | wc -l"
               exit-status: 0
               stdout:
                 - "0"
@@ -227,15 +262,16 @@
               exit-status: 0
               stdout:
                 - "/Status: active/"
-
-          YAML_START
-          ENDSSH
+          EOF
 
           echo ""
           echo "✓ Specification generated successfully: $OUTPUT"
           echo ""
-          echo "Review and edit the specification as needed, then use it for audits with:"
-          echo "  Deploy to target machine and run: cis-audit"
+          echo "Machine details:"
+          echo "  Hostname: $HOSTNAME"
+          echo "  OS: $OS_INFO"
+          echo ""
+          echo "Review and edit the specification as needed, then use it for audits."
         '';
 
       in
