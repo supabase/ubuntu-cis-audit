@@ -167,7 +167,9 @@ _: {
         #!${pkgs.bash}/bin/bash
         set -euo pipefail
 
-        OUTPUT=''${1:-machine-baseline.yaml}
+        OUTPUT=""
+        INCLUDE_DYNAMIC=false
+        INCLUDE_PORTS=false
 
         usage() {
           cat << EOF
@@ -179,14 +181,17 @@ _: {
         Captures:
           - ALL installed packages
           - ALL systemd services (state)
-          - ALL kernel parameters
-          - ALL critical file permissions (/etc)
+          - Kernel parameters (excludes dynamic ones by default)
+          - ALL critical file permissions (/etc, /boot, /root)
           - ALL user accounts
           - ALL groups
-          - Network configuration
-          - Listening ports
 
-        Usage: cis-generate-spec [output-file]
+        Usage: cis-generate-spec [OPTIONS] [output-file]
+
+        Options:
+          --include-dynamic     Include dynamic kernel parameters (fs.*-state, kernel.random.uuid, etc.)
+          --include-ports       Include listening ports (dynamic, changes as services start/stop)
+          --help, -h           Show this help
 
         Arguments:
           output-file - Output YAML file (default: machine-baseline.yaml)
@@ -198,14 +203,46 @@ _: {
           # Generate complete baseline
           sudo cis-generate-spec baseline.yaml
 
+          # Include dynamic parameters
+          sudo cis-generate-spec --include-dynamic baseline.yaml
+
+          # Include everything (dynamic params and ports)
+          sudo cis-generate-spec --include-dynamic --include-ports baseline.yaml
+
         Note: Requires sudo for complete system access
         EOF
         }
 
-        if [ "$OUTPUT" = "--help" ] || [ "$OUTPUT" = "-h" ]; then
-          usage
-          exit 0
-        fi
+        # Parse arguments
+        while [[ $# -gt 0 ]]; do
+          case $1 in
+            --include-dynamic)
+              INCLUDE_DYNAMIC=true
+              shift
+              ;;
+            --include-ports)
+              INCLUDE_PORTS=true
+              shift
+              ;;
+            -h|--help)
+              usage
+              exit 0
+              ;;
+            *)
+              if [ -z "$OUTPUT" ]; then
+                OUTPUT="$1"
+              else
+                echo "Error: Unknown option or multiple output files specified: $1"
+                usage
+                exit 1
+              fi
+              shift
+              ;;
+          esac
+        done
+
+        # Set default output if not specified
+        OUTPUT=''${OUTPUT:-machine-baseline.yaml}
 
         echo "=================================================="
         echo "Comprehensive Machine Baseline Generator"
@@ -234,7 +271,7 @@ _: {
         echo "" >> "$TMPFILE"
 
         # ===== PACKAGES =====
-        echo "[1/8] Capturing all installed packages..."
+        echo "[1/7] Capturing all installed packages..."
         echo "package:" >> "$TMPFILE"
 
         dpkg -l 2>/dev/null | grep ^ii | awk '{print $2}' | while read -r pkg; do
@@ -246,7 +283,7 @@ _: {
         done
 
         # ===== SERVICES =====
-        echo "[2/8] Capturing all systemd services..."
+        echo "[2/7] Capturing all systemd services..."
         echo "" >> "$TMPFILE"
         echo "service:" >> "$TMPFILE"
 
@@ -274,9 +311,22 @@ _: {
         done
 
         # ===== KERNEL PARAMETERS =====
-        echo "[3/8] Capturing all kernel parameters..."
+        echo "[3/7] Capturing all kernel parameters..."
         echo "" >> "$TMPFILE"
         echo "kernel-param:" >> "$TMPFILE"
+
+        # List of dynamic kernel parameters to exclude (change frequently)
+        EXCLUDED_PARAMS="
+          fs.dentry-state
+          fs.file-nr
+          fs.inode-nr
+          fs.inode-state
+          kernel.pty.nr
+          kernel.random.uuid
+          kernel.ns_last_pid
+          net.netfilter.nf_conntrack_count
+          dev.cdrom.info
+        "
 
         # Deduplicate kernel params by key (sysctl -a outputs same keys multiple times)
         TMPPARAMS=$(mktemp)
@@ -284,14 +334,42 @@ _: {
 
         while IFS='=' read -r key value; do
           key=$(echo "$key" | xargs)
-          value=$(echo "$value" | xargs)
+
+          # Skip excluded dynamic parameters (unless --include-dynamic is set)
+          if [ "$INCLUDE_DYNAMIC" = false ]; then
+            skip=0
+            for excluded in $EXCLUDED_PARAMS; do
+              if [ "$key" = "$excluded" ]; then
+                skip=1
+                break
+              fi
+            done
+
+            # Skip fs.binfmt_misc.* as they are transient
+            case "$key" in
+              fs.binfmt_misc.*) skip=1 ;;
+            esac
+
+            if [ $skip -eq 1 ]; then
+              continue
+            fi
+          fi
+
+          # Convert tabs to spaces and trim whitespace
+          value=$(echo "$value" | tr '\t' ' ' | xargs)
+
+          # Skip if value is empty or multi-line
+          if [ -z "$value" ] || echo "$value" | grep -q $'\n'; then
+            continue
+          fi
+
           echo "  $key:" >> "$TMPFILE"
           echo "    value: \"$value\"" >> "$TMPFILE"
         done < "$TMPPARAMS"
         rm -f "$TMPPARAMS"
 
         # ===== FILES =====
-        echo "[4/8] Capturing critical file permissions..."
+        echo "[4/7] Capturing critical file permissions..."
         echo "" >> "$TMPFILE"
         echo "file:" >> "$TMPFILE"
 
@@ -327,7 +405,7 @@ _: {
         rm -f "$TMPFILES"
 
         # ===== USERS =====
-        echo "[5/8] Capturing all user accounts..."
+        echo "[5/7] Capturing all user accounts..."
         echo "" >> "$TMPFILE"
         echo "user:" >> "$TMPFILE"
 
@@ -341,7 +419,7 @@ _: {
         done < /etc/passwd
 
         # ===== GROUPS =====
-        echo "[6/8] Capturing all groups..."
+        echo "[6/7] Capturing all groups..."
         echo "" >> "$TMPFILE"
         echo "group:" >> "$TMPFILE"
 
@@ -351,20 +429,26 @@ _: {
           echo "    gid: $gid" >> "$TMPFILE"
         done < /etc/group
 
-        # ===== PORTS =====
-        echo "[7/8] Capturing listening ports..."
-        echo "" >> "$TMPFILE"
-        echo "port:" >> "$TMPFILE"
+        # ===== PORTS (optional - dynamic) =====
+        if [ "$INCLUDE_PORTS" = true ]; then
+          echo "[7/8] Capturing listening ports..."
+          echo "" >> "$TMPFILE"
+          echo "port:" >> "$TMPFILE"
 
-        ss -tulpn 2>/dev/null | grep LISTEN | awk '{print $5}' | sed 's/.*://' | sort -u | while read -r port; do
-          if [ -n "$port" ] && [ "$port" != "0" ]; then
-            echo "  tcp:$port:" >> "$TMPFILE"
-            echo "    listening: true" >> "$TMPFILE"
-          fi
-        done
+          ss -tulpn 2>/dev/null | grep LISTEN | awk '{print $5}' | sed 's/.*://' | sort -u | while read -r port; do
+            if [ -n "$port" ] && [ "$port" != "0" ]; then
+              echo "  tcp:$port:" >> "$TMPFILE"
+              echo "    listening: true" >> "$TMPFILE"
+            fi
+          done
+
+          STEP="[8/8]"
+        else
+          STEP="[7/7]"
+        fi
 
         # ===== COMMANDS (for dynamic checks) =====
-        echo "[8/8] Adding verification commands..."
+        echo "$STEP Adding verification commands..."
         echo "" >> "$TMPFILE"
         echo "command:" >> "$TMPFILE"
 
