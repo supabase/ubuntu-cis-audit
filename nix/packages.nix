@@ -306,7 +306,7 @@ _: {
         # Process unique files only
         sort -u "$TMPFILES" | while read -r file; do
           if [ -f "$file" ]; then
-            mode=$(stat -c %a "$file" 2>/dev/null | sed 's/^0\([0-9]\)/\1/' || echo "unknown")
+            mode=$(stat -c %a "$file" 2>/dev/null || echo "unknown")
             owner=$(stat -c %U "$file" 2>/dev/null || echo "unknown")
             group=$(stat -c %G "$file" 2>/dev/null || echo "unknown")
 
