@@ -306,7 +306,13 @@ _: {
         # Process unique files only
         sort -u "$TMPFILES" | while read -r file; do
           if [ -f "$file" ]; then
-            mode=$(stat -c %a "$file" 2>/dev/null || echo "unknown")
+            raw_mode=$(stat -c %a "$file" 2>/dev/null || echo "unknown")
+            # Ensure mode has leading zero (GOSS expects 0644, not 644)
+            if [ "$raw_mode" != "unknown" ]; then
+              mode=$(printf "0%s" "$raw_mode")
+            else
+              mode="unknown"
+            fi
             owner=$(stat -c %U "$file" 2>/dev/null || echo "unknown")
             group=$(stat -c %G "$file" 2>/dev/null || echo "unknown")
 
