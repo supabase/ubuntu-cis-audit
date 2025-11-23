@@ -1,2 +1,10 @@
 result*
 .claude
+
+# Local test outputs (don't commit ad-hoc test files to root)
+/*.yaml
+/*.yml
+
+# But DO commit baselines in audit-specs
+!audit-specs/**/*.yaml
+!audit-specs/**/*.yml
