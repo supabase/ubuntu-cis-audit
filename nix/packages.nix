@@ -34,7 +34,7 @@ _: {
         SPEC_FILE=""
         LEVEL=""
         PROFILE=""
-        OUTPUT_FORMAT="pretty"
+        OUTPUT_FORMAT="tap"
         LIST_SPECS=false
 
         usage() {
@@ -47,7 +47,7 @@ _: {
           -s, --spec        Use a specific spec file (e.g., baselines/baseline.yml)
           -l, --level       CIS level 1 or 2 (default: 1)
           -p, --profile     server or workstation (default: server)
-          -f, --format      Output format: json, yaml, pretty, tap (default: pretty)
+          -f, --format      Output format: tap, documentation, json, junit, nagios, silent (default: tap)
           --list            List all available spec files
           --help            Show this help
 
@@ -100,6 +100,18 @@ _: {
               ;;
           esac
         done
+
+        # Validate output format
+        case "$OUTPUT_FORMAT" in
+          tap|documentation|json|junit|nagios|silent)
+            # Valid format
+            ;;
+          *)
+            echo "Error: Invalid output format: $OUTPUT_FORMAT"
+            echo "Valid formats: tap, documentation, json, junit, nagios, silent"
+            exit 1
+            ;;
+        esac
 
         # List specs if requested
         if [ "$LIST_SPECS" = true ]; then
@@ -294,7 +306,7 @@ _: {
         # Process unique files only
         sort -u "$TMPFILES" | while read -r file; do
           if [ -f "$file" ]; then
-            mode=$(stat -c %a "$file" 2>/dev/null || echo "unknown")
+            mode=$(stat -c %a "$file" 2>/dev/null | sed 's/^0\([0-9]\)/\1/' || echo "unknown")
             owner=$(stat -c %U "$file" 2>/dev/null || echo "unknown")
             group=$(stat -c %G "$file" 2>/dev/null || echo "unknown")
 
