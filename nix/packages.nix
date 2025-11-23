@@ -266,9 +266,9 @@ _: {
         echo "" >> "$TMPFILE"
         echo "kernel-param:" >> "$TMPFILE"
 
-        # Deduplicate kernel params (sysctl -a can output duplicates)
+        # Deduplicate kernel params by key (sysctl -a outputs same keys multiple times)
         TMPPARAMS=$(mktemp)
-        sysctl -a 2>/dev/null | sort -u > "$TMPPARAMS"
+        sysctl -a 2>/dev/null | awk -F= '!seen[$1]++' > "$TMPPARAMS"
 
         while IFS='=' read -r key value; do
           key=$(echo "$key" | xargs)
