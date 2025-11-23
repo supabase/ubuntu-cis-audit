@@ -119,11 +119,15 @@ _: {
 
         # Determine which spec file to use
         if [ -n "$SPEC_FILE" ]; then
-          # Use specified spec (support both full path and relative)
-          if [[ "$SPEC_FILE" = /* ]]; then
+          # Check if file exists locally (absolute or relative path)
+          if [ -f "$SPEC_FILE" ]; then
             FULL_SPEC_PATH="$SPEC_FILE"
-          else
+          # Check if it's a bundled spec
+          elif [ -f "${cisAuditSpecs}/share/cis-audit/$SPEC_FILE" ]; then
             FULL_SPEC_PATH="${cisAuditSpecs}/share/cis-audit/$SPEC_FILE"
+          else
+            # File not found anywhere
+            FULL_SPEC_PATH="$SPEC_FILE"
           fi
         else
           # Use level/profile (default to level 1 server)
@@ -338,7 +342,7 @@ _: {
 
         # Password policy check
         echo "  empty-passwords:" >> "$TMPFILE"
-        echo "    exec: \"awk -F: '(\\\$2 == \\\"\\\") {print}' /etc/shadow | wc -l\"" >> "$TMPFILE"
+        echo "    exec: 'awk -F: ''''(\$2 == \"\")'''' {print} /etc/shadow | wc -l'" >> "$TMPFILE"
         echo "    exit-status: 0" >> "$TMPFILE"
         echo "    stdout:" >> "$TMPFILE"
         echo "      - \"0\"" >> "$TMPFILE"
