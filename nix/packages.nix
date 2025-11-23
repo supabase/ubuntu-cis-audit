@@ -266,37 +266,47 @@ _: {
         echo "" >> "$TMPFILE"
         echo "kernel-param:" >> "$TMPFILE"
 
-        sysctl -a 2>/dev/null | while IFS='=' read -r key value; do
+        # Deduplicate kernel params (sysctl -a can output duplicates)
+        TMPPARAMS=$(mktemp)
+        sysctl -a 2>/dev/null | sort -u > "$TMPPARAMS"
+
+        while IFS='=' read -r key value; do
           key=$(echo "$key" | xargs)
           value=$(echo "$value" | xargs)
           echo "  $key:" >> "$TMPFILE"
           echo "    value: \"$value\"" >> "$TMPFILE"
-        done
+        done < "$TMPPARAMS"
+        rm -f "$TMPPARAMS"
 
         # ===== FILES =====
         echo "[4/8] Capturing critical file permissions..."
         echo "" >> "$TMPFILE"
         echo "file:" >> "$TMPFILE"
 
-        # List of critical directories and files
-        for path in /etc /etc/ssh /etc/pam.d /etc/security /boot /root; do
+        # Collect all unique files first to avoid duplicates
+        TMPFILES=$(mktemp)
+        for path in /etc /boot /root; do
           if [ -d "$path" ]; then
-            find "$path" -maxdepth 2 -type f 2>/dev/null | while read -r file; do
-              if [ -f "$file" ]; then
-                mode=$(stat -c %a "$file" 2>/dev/null || echo "unknown")
-                owner=$(stat -c %U "$file" 2>/dev/null || echo "unknown")
-                group=$(stat -c %G "$file" 2>/dev/null || echo "unknown")
-
-                # Use relative path from /
-                echo "  $file:" >> "$TMPFILE"
-                echo "    exists: true" >> "$TMPFILE"
-                echo "    mode: \"$mode\"" >> "$TMPFILE"
-                echo "    owner: $owner" >> "$TMPFILE"
-                echo "    group: $group" >> "$TMPFILE"
-              fi
-            done
+            find "$path" -maxdepth 2 -type f 2>/dev/null >> "$TMPFILES"
           fi
         done
+
+        # Process unique files only
+        sort -u "$TMPFILES" | while read -r file; do
+          if [ -f "$file" ]; then
+            mode=$(stat -c %a "$file" 2>/dev/null || echo "unknown")
+            owner=$(stat -c %U "$file" 2>/dev/null || echo "unknown")
+            group=$(stat -c %G "$file" 2>/dev/null || echo "unknown")
+
+            # Use relative path from /
+            echo "  $file:" >> "$TMPFILE"
+            echo "    exists: true" >> "$TMPFILE"
+            echo "    mode: \"$mode\"" >> "$TMPFILE"
+            echo "    owner: $owner" >> "$TMPFILE"
+            echo "    group: $group" >> "$TMPFILE"
+          fi
+        done
+        rm -f "$TMPFILES"
 
         # ===== USERS =====
         echo "[5/8] Capturing all user accounts..."
@@ -341,8 +351,9 @@ _: {
         echo "command:" >> "$TMPFILE"
 
         # Password policy check
+        CMD_EXEC="'awk -F: '''(\$2 == \"\")''' {print} /etc/shadow | wc -l'"
         echo "  empty-passwords:" >> "$TMPFILE"
-        echo "    exec: 'awk -F: ''''(\$2 == \"\")'''' {print} /etc/shadow | wc -l'" >> "$TMPFILE"
+        echo "    exec: $CMD_EXEC" >> "$TMPFILE"
         echo "    exit-status: 0" >> "$TMPFILE"
         echo "    stdout:" >> "$TMPFILE"
         echo "      - \"0\"" >> "$TMPFILE"
