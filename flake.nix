@@ -54,30 +54,48 @@
           #!${pkgs.bash}/bin/bash
           set -euo pipefail
 
-          LEVEL="1"
-          PROFILE="server"
+          SPEC_FILE=""
+          LEVEL=""
+          PROFILE=""
           OUTPUT_FORMAT="pretty"
+          LIST_SPECS=false
 
           usage() {
             cat << EOF
           CIS Ubuntu Audit Tool
-          
+
           Usage: cis-audit [OPTIONS]
 
           Options:
+            -s, --spec        Use a specific spec file (e.g., baselines/baseline.yml)
             -l, --level       CIS level 1 or 2 (default: 1)
             -p, --profile     server or workstation (default: server)
             -f, --format      Output format: json, yaml, pretty, tap (default: pretty)
+            --list            List all available spec files
             --help            Show this help
-          
-          Example:
-            cis-audit --level 1 --profile server --format json
+
+          Examples:
+            # Use a committed baseline
+            cis-audit --spec baselines/baseline.yml
+
+            # Use pre-defined CIS benchmark
+            cis-audit --level 1 --profile server
+
+            # List available specs
+            cis-audit --list
+
+            # Custom format
+            cis-audit --spec baselines/postgres-baseline.yml --format json
           EOF
           }
 
           # Argument parsing
           while [[ $# -gt 0 ]]; do
             case $1 in
+              -s|--spec)
+                SPEC_FILE="$2"
+                shift 2
+                ;;
               -l|--level)
                 LEVEL="$2"
                 shift 2
@@ -89,6 +107,10 @@
               -f|--format)
                 OUTPUT_FORMAT="$2"
                 shift 2
+                ;;
+              --list)
+                LIST_SPECS=true
+                shift
                 ;;
               --help)
                 usage
@@ -102,20 +124,49 @@
             esac
           done
 
-          SPEC_FILE="${cisAuditSpecs}/share/cis-audit/cis_level''${LEVEL}_''${PROFILE}.yaml"
-          
-          if [[ ! -f "$SPEC_FILE" ]]; then
-            echo "Error: Spec file not found: $SPEC_FILE"
-            echo "Available specs:"
-            ls -1 ${cisAuditSpecs}/share/cis-audit/
+          # List specs if requested
+          if [ "$LIST_SPECS" = true ]; then
+            echo "Available specification files:"
+            echo ""
+            echo "CIS Benchmarks:"
+            find ${cisAuditSpecs}/share/cis-audit -maxdepth 1 -name "cis_*.yaml" -exec basename {} \; | sort
+            echo ""
+            echo "Baselines:"
+            if [ -d "${cisAuditSpecs}/share/cis-audit/baselines" ]; then
+              find ${cisAuditSpecs}/share/cis-audit/baselines -name "*.yml" -o -name "*.yaml" | while read f; do
+                basename "$f"
+              done | sort
+            fi
+            exit 0
+          fi
+
+          # Determine which spec file to use
+          if [ -n "$SPEC_FILE" ]; then
+            # Use specified spec (support both full path and relative)
+            if [[ "$SPEC_FILE" = /* ]]; then
+              FULL_SPEC_PATH="$SPEC_FILE"
+            else
+              FULL_SPEC_PATH="${cisAuditSpecs}/share/cis-audit/$SPEC_FILE"
+            fi
+          else
+            # Use level/profile (default to level 1 server)
+            LEVEL=''${LEVEL:-1}
+            PROFILE=''${PROFILE:-server}
+            FULL_SPEC_PATH="${cisAuditSpecs}/share/cis-audit/cis_level''${LEVEL}_''${PROFILE}.yaml"
+          fi
+
+          if [[ ! -f "$FULL_SPEC_PATH" ]]; then
+            echo "Error: Spec file not found: $FULL_SPEC_PATH"
+            echo ""
+            echo "Run 'cis-audit --list' to see available specs"
             exit 1
           fi
 
-          echo "Running CIS Ubuntu Level $LEVEL ($PROFILE) audit..."
+          echo "Running audit with: $(basename $FULL_SPEC_PATH)"
           echo ""
-          
+
           # Run GOSS with sudo
-          sudo ${goss}/bin/goss --gossfile "$SPEC_FILE" validate --format "$OUTPUT_FORMAT"
+          sudo ${goss}/bin/goss --gossfile "$FULL_SPEC_PATH" validate --format "$OUTPUT_FORMAT"
         '';
 
         # Script to generate comprehensive machine baseline spec
