@@ -24,6 +24,12 @@ _: {
           # SSH for remote operations
           openssh
 
+          # Go development
+          go
+          gopls
+          gotools
+          delve
+
           # Audit tools
           config.packages.goss
         ];

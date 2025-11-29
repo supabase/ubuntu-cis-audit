@@ -13,18 +13,26 @@
           };
           shellcheck.enable = true;
           shfmt.enable = true;
+          gofmt.enable = true;
         };
 
-        settings.formatter.yamllint = {
-          command = pkgs.yamllint;
-          options = [
-            "-d"
-            "{extends: default, rules: {line-length: {max: 120}, document-start: disable, key-duplicates: disable}}"
+        settings = {
+          global.excludes = [
+            "*.sum"
+            "vendor/*"
           ];
-          includes = [
-            "*.yaml"
-            "*.yml"
-          ];
+
+          formatter.yamllint = {
+            command = pkgs.yamllint;
+            options = [
+              "-d"
+              "{extends: default, rules: {line-length: {max: 120}, document-start: disable, key-duplicates: disable}}"
+            ];
+            includes = [
+              "*.yaml"
+              "*.yml"
+            ];
+          };
         };
       };
     };
